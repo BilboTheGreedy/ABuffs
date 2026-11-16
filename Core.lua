@@ -19,7 +19,7 @@ local defaults = {
 	},
 }
 
-ACore.New(ADDON, ns, { db = "ABuffsDB", defaults = defaults })
+ACore.New(ADDON, ns, { db = "ABuffsDB", defaults = defaults, profile = true })
 
 function ns.InCombat()
 	return InCombatLockdown and InCombatLockdown() and true or false
@@ -80,6 +80,7 @@ end
 
 ACore.Register({
 	name = "ABuffs",
+	options = function() return ns.Options() end,
 	title = "ABuffs",
 	slash = "/abuffs",
 	desc = "buffs, debuffs and reminders",
