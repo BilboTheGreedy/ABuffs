@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: ABuffs
+## Notes: Buffs, debuffs and weapon enchants with timers, plus missing buff reminders
+## Version: 0.1.0
+## Category: Combat
+## IconTexture: Interface\Icons\Spell_Holy_WordFortitude
+## Dependencies: ACore
+## SavedVariables: ABuffsDB
+
+Core.lua
+Auras.lua
+Reminders.lua
