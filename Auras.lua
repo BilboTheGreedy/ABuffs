@@ -10,20 +10,22 @@ local DISPEL = {
 }
 local HARM = { 0.8, 0.1, 0.1 }
 local ENCHANT = { 0.6, 0.3, 0.9 }
+local QUESTION = "Interface\\Icons\\INV_Misc_QuestionMark"
 local GAP = 4
 local TEXT = 12
+local MAX = 60
 
 local groups = {}
 ns.groups = groups
 
 local function plain(v)
-	if v == nil or ns.IsSecret(v) then return nil end
+	if ns.IsSecret(v) or type(v) == "nil" then return nil end
 	return v
 end
 
 function ns.Read(filter)
 	local out = {}
-	for i = 1, 40 do
+	for i = 1, MAX do
 		local data
 		if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
 			local ok, d = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, filter)
@@ -39,10 +41,11 @@ function ns.Read(filter)
 		local secret = ns.IsSecret(data.duration) or ns.IsSecret(data.expirationTime)
 		local a = {
 			index = i, filter = filter, icon = data.icon, name = plain(data.name), id = plain(data.spellId),
-			instance = data.auraInstanceID, dispel = plain(data.dispelName), secret = secret and true or false,
+			instance = plain(data.auraInstanceID), dispel = plain(data.dispelName), secret = secret and true or false,
 			duration = type(duration) == "number" and duration or 0,
 			expires = type(expires) == "number" and expires or 0,
 		}
+		if type(a.name) ~= "string" then a.name = nil end
 		local count = data.applications
 		if ns.IsSecret(count) then
 			a.countSecret = true
@@ -54,26 +57,51 @@ function ns.Read(filter)
 	return out
 end
 
+local function enchantSlot(slot, old)
+	if C_PaperDollInfo and C_PaperDollInfo.GetTemporaryEnchantmentInfo then
+		local ok, info = pcall(C_PaperDollInfo.GetTemporaryEnchantmentInfo, slot)
+		if ok then
+			if type(info) ~= "table" or ns.IsSecret(info) then return false end
+			local left = info.remainingTimeMs
+			if plain(info.hasExpirationTime) == false then left = nil end
+			return true, left, info.chargesRemaining
+		end
+	end
+	local o = old and old[slot]
+	if not o then return false end
+	local has = plain(o[1])
+	return has and true or false, o[2], o[3]
+end
+
+function ns.EnchantsKnown()
+	if C_PaperDollInfo and C_PaperDollInfo.GetTemporaryEnchantmentInfo then return true end
+	return GetWeaponEnchantInfo ~= nil
+end
+
 function ns.ReadEnchants()
 	local out = {}
-	if not GetWeaponEnchantInfo then return out end
-	local ok, hasMain, mainLeft, mainCharges, _, hasOff, offLeft, offCharges = pcall(GetWeaponEnchantInfo)
-	if not ok then return out end
-	local now = GetTime()
-	local function add(has, left, charges, slot)
-		if not has or ns.IsSecret(has) then return end
-		local a = { enchant = slot, duration = 0, expires = 0, secret = false }
-		if type(left) == "number" and not ns.IsSecret(left) then
-			a.expires = now + left / 1000
-			a.duration = left / 1000
-		end
-		if type(charges) == "number" and not ns.IsSecret(charges) and charges > 1 then a.count = charges end
-		if GetInventoryItemTexture then a.icon = GetInventoryItemTexture("player", slot) end
-		a.name = slot == 16 and "Main hand enchant" or "Off hand enchant"
-		out[#out + 1] = a
+	local old
+	if GetWeaponEnchantInfo then
+		local ok, hasMain, mainLeft, mainCharges, _, hasOff, offLeft, offCharges = pcall(GetWeaponEnchantInfo)
+		if ok then old = { [16] = { hasMain, mainLeft, mainCharges }, [17] = { hasOff, offLeft, offCharges } } end
 	end
-	add(hasMain, mainLeft, mainCharges, 16)
-	add(hasOff, offLeft, offCharges, 17)
+	local now = GetTime()
+	for _, slot in ipairs({ 16, 17 }) do
+		local has, left, charges = enchantSlot(slot, old)
+		if has then
+			local a = { enchant = slot, duration = 0, expires = 0, secret = false }
+			left = plain(left)
+			if type(left) == "number" and left > 0 then
+				a.expires = now + left / 1000
+				a.duration = left / 1000
+			end
+			charges = plain(charges)
+			if type(charges) == "number" and charges > 1 then a.count = charges end
+			if GetInventoryItemTexture then a.icon = GetInventoryItemTexture("player", slot) end
+			a.name = slot == 16 and "Main hand enchant" or "Off hand enchant"
+			out[#out + 1] = a
+		end
+	end
 	return out
 end
 
@@ -89,27 +117,58 @@ local function sortAuras(list)
 	end)
 end
 
+local function shownAuras(list)
+	local hidden = ns.db.hidden
+	if not next(hidden) then return list end
+	local out = {}
+	for _, a in ipairs(list) do
+		if not (a.name and hidden[a.name]) then out[#out + 1] = a end
+	end
+	return out
+end
+
 local function showTooltip(self)
 	local a = self.aura
 	if not a then return end
 	GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT")
 	local done = false
+	local helpful = a.filter == "HELPFUL"
 	if a.enchant then
 		if GameTooltip.SetInventoryItem then done = pcall(GameTooltip.SetInventoryItem, GameTooltip, "player", a.enchant) end
-	elseif GameTooltip.SetUnitAura then
-		done = pcall(GameTooltip.SetUnitAura, GameTooltip, "player", a.index, a.filter)
-	elseif a.filter == "HELPFUL" and GameTooltip.SetUnitBuff then
-		done = pcall(GameTooltip.SetUnitBuff, GameTooltip, "player", a.index)
-	elseif GameTooltip.SetUnitDebuff then
-		done = pcall(GameTooltip.SetUnitDebuff, GameTooltip, "player", a.index)
+	else
+		if a.instance and helpful and GameTooltip.SetUnitBuffByAuraInstanceID then
+			done = pcall(GameTooltip.SetUnitBuffByAuraInstanceID, GameTooltip, "player", a.instance, a.filter)
+		elseif a.instance and not helpful and GameTooltip.SetUnitDebuffByAuraInstanceID then
+			done = pcall(GameTooltip.SetUnitDebuffByAuraInstanceID, GameTooltip, "player", a.instance, a.filter)
+		end
+		if not done then
+			if GameTooltip.SetUnitAura then
+				done = pcall(GameTooltip.SetUnitAura, GameTooltip, "player", a.index, a.filter)
+			elseif helpful and GameTooltip.SetUnitBuff then
+				done = pcall(GameTooltip.SetUnitBuff, GameTooltip, "player", a.index)
+			elseif GameTooltip.SetUnitDebuff then
+				done = pcall(GameTooltip.SetUnitDebuff, GameTooltip, "player", a.index)
+			end
+		end
 	end
 	if not done and a.name then GameTooltip:AddLine(a.name, 1, 1, 1) end
+	if helpful and not ns.InCombat() then
+		GameTooltip:AddLine("Right-click: cancel    Shift-right-click: hide", 0.58, 0.6, 0.65)
+	end
 	GameTooltip:Show()
 end
 
 local function cancel(self, button)
 	local a = self.aura
-	if button ~= "RightButton" or not a or ns.InCombat() then return end
+	if button ~= "RightButton" or not a then return end
+	if IsShiftKeyDown and IsShiftKeyDown() then
+		if a.name and not a.enchant and a.filter == "HELPFUL" then
+			ns.db.hidden[a.name] = true
+			ns:Fire("OPTIONS")
+		end
+		return
+	end
+	if ns.InCombat() then return end
 	if a.enchant then
 		if CancelItemTempEnchantment then pcall(CancelItemTempEnchantment, a.enchant == 16 and 1 or 2) end
 	elseif a.filter == "HELPFUL" and CancelUnitBuff then
@@ -144,7 +203,7 @@ end
 
 local function setIcon(f, a, group)
 	f.aura = a
-	f.tex:SetTexture(a.icon)
+	if not pcall(f.tex.SetTexture, f.tex, a.icon) then f.tex:SetTexture(QUESTION) end
 	if group.key == "debuffs" then
 		edgeColor(f, a.dispel and DISPEL[a.dispel] or HARM)
 	elseif group.key == "enchants" then
@@ -157,7 +216,7 @@ local function setIcon(f, a, group)
 		f.count:SetText(a.count)
 	elseif a.countSecret and a.instance and C_UnitAuras and C_UnitAuras.GetAuraApplicationDisplayCount then
 		local ok, text = pcall(C_UnitAuras.GetAuraApplicationDisplayCount, "player", a.instance, 2, 99)
-		if ok and text ~= nil then f.count:SetText(text) end
+		if ok and type(text) ~= "nil" then pcall(f.count.SetText, f.count, text) end
 	end
 	f.cd:Hide()
 	f.time:SetText("")
@@ -165,7 +224,7 @@ local function setIcon(f, a, group)
 	if a.secret then
 		if a.instance and C_UnitAuras and C_UnitAuras.GetAuraDuration and f.cd.SetCooldownFromDurationObject then
 			local ok, obj = pcall(C_UnitAuras.GetAuraDuration, "player", a.instance)
-			if ok and obj then
+			if ok and type(obj) ~= "nil" then
 				if pcall(f.cd.SetCooldownFromDurationObject, f.cd, obj) then f.cd:Show() end
 			end
 		end
@@ -193,7 +252,7 @@ end
 local function layout(group, list)
 	local db = ns.db
 	local size = db.size
-	if group.key == "debuffs" then size = math.floor(size * 1.15 + 0.5) end
+	if group.key == "debuffs" then size = math.floor(size * (db.debuffScale or 1.15) + 0.5) end
 	local step = size + GAP
 	local per = db.perRow
 	group.frame:SetSize(per * step - GAP, size)
@@ -234,6 +293,7 @@ function ns.Group(key)
 	local db = ns.db.groups[key]
 	db.locked = ns.db.locked
 	UI.Movable(frame, db)
+	if ACore.NameMover then ACore.NameMover(frame, "ABuffs " .. LABEL[key]) end
 	local handle = CreateFrame("Button", nil, frame)
 	handle:SetAllPoints(frame)
 	handle:SetFrameLevel((frame:GetFrameLevel() or 1) + 20)
@@ -256,35 +316,48 @@ end
 
 function ns.Refresh()
 	if not ns.db then return end
-	local buffs = ns.Read("HELPFUL")
+	local all = ns.Read("HELPFUL")
 	local debuffs = ns.Read("HARMFUL")
+	ns.buffs = all
+	local buffs = shownAuras(all)
 	if ns.db.sort then
 		sortAuras(buffs)
 		sortAuras(debuffs)
 	end
-	ns.buffs = buffs
 	layout(ns.Group("buffs"), buffs)
 	layout(ns.Group("debuffs"), debuffs)
 	layout(ns.Group("enchants"), ns.ReadEnchants())
 	ns:Fire("AURAS")
 end
 
+local NAMES = { "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame" }
+local parents = {}
 local hidden
 local pendingHide
 local function hideBlizzard()
-	if not ns.db.hideBlizzard then return end
 	if ns.InCombat() then
 		pendingHide = true
 		return
 	end
 	pendingHide = false
-	if not hidden then
-		hidden = CreateFrame("Frame")
-		hidden:Hide()
-	end
-	for _, name in ipairs({ "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame" }) do
-		local f = _G[name]
-		if f and f.SetParent then pcall(f.SetParent, f, hidden) end
+	if ns.db.hideBlizzard then
+		if not hidden then
+			hidden = CreateFrame("Frame")
+			hidden:Hide()
+		end
+		for _, name in ipairs(NAMES) do
+			local f = _G[name]
+			if f and f.SetParent then
+				if not parents[name] then parents[name] = f.GetParent and f:GetParent() or UIParent end
+				pcall(f.SetParent, f, hidden)
+			end
+		end
+	else
+		for name, parent in pairs(parents) do
+			local f = _G[name]
+			if f and f.SetParent then pcall(f.SetParent, f, parent) end
+			parents[name] = nil
+		end
 	end
 end
 ns.HideBlizzard = hideBlizzard

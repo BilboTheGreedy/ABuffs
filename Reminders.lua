@@ -3,25 +3,26 @@ local UI = ns.UI
 
 local STONE = "Interface\\Icons\\INV_Stone_SharpeningStone_05"
 local FOOD = "Interface\\Icons\\INV_Misc_Food_15"
+local FLASK = "Interface\\Icons\\INV_Potion_62"
 
 local LISTS = {
 	WARRIOR = {
-		{ key = "shout", label = "Battle Shout", ids = { 6673 } },
+		{ key = "shout", label = "Battle Shout", name = 6673, ids = { 6673 } },
 	},
 	DRUID = {
-		{ key = "motw", label = "Mark of the Wild", ids = { 1126, 21849 } },
-		{ key = "thorns", label = "Thorns", ids = { 467 }, off = true },
+		{ key = "motw", label = "Mark of the Wild", name = 1126, ids = { 1126, 21849 } },
+		{ key = "thorns", label = "Thorns", name = 467, ids = { 467 }, off = true },
 	},
 	MAGE = {
-		{ key = "intellect", label = "Arcane Intellect", ids = { 1459, 23028 } },
+		{ key = "intellect", label = "Arcane Intellect", name = 1459, ids = { 1459, 23028 } },
 		{ key = "armor", label = "Mage armor", ids = { 168, 7302, 6117 } },
 	},
 	PRIEST = {
-		{ key = "fortitude", label = "Power Word: Fortitude", ids = { 1243, 21562 } },
-		{ key = "innerfire", label = "Inner Fire", ids = { 588 } },
+		{ key = "fortitude", label = "Power Word: Fortitude", name = 1243, ids = { 1243, 21562 } },
+		{ key = "innerfire", label = "Inner Fire", name = 588, ids = { 588 } },
 	},
 	WARLOCK = {
-		{ key = "armor", label = "Demon Armor", ids = { 687, 706 } },
+		{ key = "armor", label = "Demon Armor", name = 706, ids = { 687, 706 } },
 	},
 	PALADIN = {
 		{ key = "blessing", label = "Blessing", ids = { 19740, 19742, 20217, 1038, 20911, 19977, 25782, 25894, 25898, 25895, 25899, 25890 } },
@@ -31,7 +32,7 @@ local LISTS = {
 		{ key = "aspect", label = "Aspect", ids = { 13165, 13163, 5118, 13159, 20043, 13161 } },
 	},
 	SHAMAN = {
-		{ key = "shield", label = "Lightning Shield", ids = { 324 } },
+		{ key = "shield", label = "Lightning Shield", name = 324, ids = { 324 } },
 		{ key = "weapon", label = "Weapon enchant", weapon = true },
 	},
 	ROGUE = {
@@ -39,19 +40,31 @@ local LISTS = {
 	},
 }
 
+local GROUP = {
+	{ key = "gfort", label = "Power Word: Fortitude", name = 1243, ids = { 1243, 21562 }, from = "PRIEST" },
+	{ key = "gmotw", label = "Mark of the Wild", name = 1126, ids = { 1126, 21849 }, from = "DRUID" },
+	{ key = "gint", label = "Arcane Intellect", name = 1459, ids = { 1459, 23028 }, from = "MAGE", mana = true },
+}
+
 local COMMON = {
 	{ key = "food", label = "Food buff", ids = { 19705 }, instance = true, always = true, icon = FOOD },
+	{ key = "flask", label = "Flask", ids = { 17626, 17627, 17628, 17629 }, raid = true, always = true, icon = FLASK, off = true },
 	{ key = "stone", label = "Weapon stone or oil", weapon = true, instance = true, icon = STONE },
 }
 
 local function spellName(id)
-	if C_Spell and C_Spell.GetSpellName then return C_Spell.GetSpellName(id) end
-	if GetSpellInfo then return (GetSpellInfo(id)) end
+	local name
+	if C_Spell and C_Spell.GetSpellName then
+		name = C_Spell.GetSpellName(id)
+	elseif GetSpellInfo then
+		name = GetSpellInfo(id)
+	end
+	if type(name) == "string" and not ns.IsSecret(name) and name ~= "" then return name end
 end
 
 local function spellIcon(id)
-	if C_Spell and C_Spell.GetSpellTexture then return C_Spell.GetSpellTexture(id) end
-	if GetSpellTexture then return GetSpellTexture(id) end
+	if C_Spell and C_Spell.GetSpellTexture then return (C_Spell.GetSpellTexture(id)) end
+	if GetSpellTexture then return (GetSpellTexture(id)) end
 end
 
 local function known(id)
@@ -64,12 +77,20 @@ local function known(id)
 	return true
 end
 
+local function label(e)
+	return e.name and spellName(e.name) or e.label
+end
+ns.ReminderLabel = label
+
 function ns.ReminderList()
 	local out = {}
 	for _, e in ipairs(LISTS[ns.playerClass] or {}) do out[#out + 1] = e end
 	local hasWeapon = false
 	for _, e in ipairs(out) do
 		if e.weapon then hasWeapon = true end
+	end
+	for _, e in ipairs(GROUP) do
+		if e.from ~= ns.playerClass then out[#out + 1] = e end
 	end
 	for _, e in ipairs(COMMON) do
 		if not (e.weapon and hasWeapon) then out[#out + 1] = e end
@@ -86,8 +107,16 @@ end
 function ns.ReminderEntries()
 	local entries = { { text = "Remind me about", title = true } }
 	for _, e in ipairs(ns.ReminderList()) do
+		local text = label(e)
+		if e.from then
+			text = text .. "  (from a group member)"
+		elseif e.raid then
+			text = text .. "  (in raids)"
+		elseif e.instance then
+			text = text .. "  (in instances)"
+		end
 		entries[#entries + 1] = {
-			text = e.label, checked = enabled(e),
+			text = text, checked = enabled(e),
 			func = function()
 				ns.db.off[e.key] = enabled(e)
 				ns:Fire("OPTIONS")
@@ -97,40 +126,67 @@ function ns.ReminderEntries()
 	return entries
 end
 
+local function groupClasses()
+	local out = {}
+	local n = GetNumGroupMembers and GetNumGroupMembers() or 0
+	if ns.IsSecret(n) or type(n) ~= "number" or n < 1 or not UnitExists then return out end
+	local raid = IsInRaid and IsInRaid() and true or false
+	for i = 1, n do
+		local unit = (raid and "raid" or "party") .. i
+		if UnitExists(unit) then
+			local _, class = UnitClass(unit)
+			if not ns.IsSecret(class) and type(class) == "string" then out[class] = true end
+		end
+	end
+	return out
+end
+
+local function usesMana()
+	if not UnitPowerMax then return true end
+	local ok, max = pcall(UnitPowerMax, "player", 0)
+	if not ok or ns.IsSecret(max) or type(max) ~= "number" then return true end
+	return max > 0
+end
+
 function ns.Missing()
 	local out = {}
 	if not ns.db.reminders or ns.InCombat() then return out end
 	if UnitIsDeadOrGhost and UnitIsDeadOrGhost("player") then return out end
 	local names = {}
 	for _, a in ipairs(ns.buffs or {}) do
-		if a.secret and not a.name then return out end
-		if a.name then names[a.name] = true end
+		if not a.name then return out end
+		names[a.name] = true
 	end
 	local inside = IsInInstance and IsInInstance() and true or false
-	local enchants = ns.ReadEnchants()
+	local raid = IsInRaid and IsInRaid() and true or false
+	local classes
 	local main = false
-	for _, a in ipairs(enchants) do
+	for _, a in ipairs(ns.ReadEnchants()) do
 		if a.enchant == 16 then main = true end
 	end
 	for _, e in ipairs(ns.ReminderList()) do
-		if enabled(e) and (not e.instance or inside) then
+		if enabled(e) and (not e.instance or inside) and (not e.raid or raid) then
 			if e.weapon then
 				local armed = GetInventoryItemID and GetInventoryItemID("player", 16)
-				if armed and not main then
-					out[#out + 1] = { entry = e, icon = e.icon or STONE, label = e.label }
+				if armed and not main and ns.EnchantsKnown() then
+					out[#out + 1] = { entry = e, icon = e.icon or STONE, label = label(e) }
 				end
 			else
 				local have, can, icon = false, e.always or false, e.icon
+				if e.from then
+					classes = classes or groupClasses()
+					can = classes[e.from] and (not e.mana or usesMana()) or false
+				end
 				for _, id in ipairs(e.ids) do
 					local name = spellName(id)
 					if name and names[name] then have = true break end
-					if not e.always and known(id) then
+					if not e.always and not e.from and known(id) then
 						can = true
 						icon = icon or spellIcon(id)
 					end
 				end
 				if can and not have then
-					out[#out + 1] = { entry = e, icon = icon or spellIcon(e.ids[1]), label = e.label }
+					out[#out + 1] = { entry = e, icon = icon or spellIcon(e.ids[1]), label = label(e) }
 				end
 			end
 		end
@@ -188,7 +244,10 @@ function ns.RefreshReminders()
 	group.shown = #list
 end
 
+local function later() ns.Debounce("remind", 0.3, ns.RefreshReminders) end
+
 ns:Listen("AURAS", ns.RefreshReminders)
-ns:On("PLAYER_EQUIPMENT_CHANGED", function() ns.Debounce("remind", 0.3, ns.RefreshReminders) end)
-ns:On("ZONE_CHANGED_NEW_AREA", function() ns.Debounce("remind", 0.3, ns.RefreshReminders) end)
-ns:On("SPELLS_CHANGED", function() ns.Debounce("remind", 0.3, ns.RefreshReminders) end)
+ns:On("PLAYER_EQUIPMENT_CHANGED", later)
+ns:On("ZONE_CHANGED_NEW_AREA", later)
+ns:On("SPELLS_CHANGED", later)
+ns:On("GROUP_ROSTER_UPDATE", later)
